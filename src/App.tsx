@@ -126,6 +126,89 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
+  // Google Sheets DB synchronization states
+  const [sheetUrl, setSheetUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem('op_hub_sheet_url') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'success' | 'error'>('idle');
+  const [lastSyncTime, setLastSyncTime] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('op_hub_last_sync_time');
+    } catch {
+      return null;
+    }
+  });
+
+  const fetchFromGoogleSheet = async (url: string) => {
+    if (!url) return;
+    setSyncStatus('syncing');
+    try {
+      const fetchUrl = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`;
+      const response = await fetch(fetchUrl);
+      const data = await response.json();
+      if (data.success) {
+        const remoteTasks = data.tasks || [];
+        const remoteProjects = data.projects || [];
+        setTasks(remoteTasks);
+        setProjects(remoteProjects);
+        try {
+          localStorage.setItem('engineer_tasks', JSON.stringify(remoteTasks));
+          localStorage.setItem('engineer_projects', JSON.stringify(remoteProjects));
+        } catch {}
+        
+        const nowStr = new Date().toLocaleTimeString();
+        setLastSyncTime(nowStr);
+        try {
+          localStorage.setItem('op_hub_last_sync_time', nowStr);
+        } catch {}
+        setSyncStatus('success');
+      } else {
+        console.error('Fetch Google Sheet error:', data.error);
+        setSyncStatus('error');
+      }
+    } catch (err) {
+      console.error('Fetch Google Sheet failed:', err);
+      setSyncStatus('error');
+    }
+  };
+
+  const syncToGoogleSheet = async (url: string, updatedTasks: TaskEntry[], updatedProjects: ProjectInfo[]) => {
+    if (!url) return;
+    setSyncStatus('syncing');
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8',
+        },
+        body: JSON.stringify({
+          action: 'save_all',
+          tasks: updatedTasks,
+          projects: updatedProjects,
+        }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        const nowStr = new Date().toLocaleTimeString();
+        setLastSyncTime(nowStr);
+        try {
+          localStorage.setItem('op_hub_last_sync_time', nowStr);
+        } catch {}
+        setSyncStatus('success');
+      } else {
+        console.error('Sync Google Sheet error:', data.error);
+        setSyncStatus('error');
+      }
+    } catch (err) {
+      console.error('Sync Google Sheet failed:', err);
+      setSyncStatus('error');
+    }
+  };
+
   // Save changes to localstorage on any update
   useEffect(() => {
     try {
@@ -143,6 +226,11 @@ export default function App() {
       } else {
         setProjects(INITIAL_PROJECTS);
       }
+
+      const savedUrl = localStorage.getItem('op_hub_sheet_url');
+      if (savedUrl) {
+        fetchFromGoogleSheet(savedUrl);
+      }
     } catch (e) {
       console.warn('LocalStorage error: ', e);
       setTasks(INITIAL_TASKS);
@@ -154,6 +242,11 @@ export default function App() {
     try {
       localStorage.setItem('engineer_tasks', JSON.stringify(updatedTasks));
       localStorage.setItem('engineer_projects', JSON.stringify(updatedProjects));
+
+      const savedUrl = localStorage.getItem('op_hub_sheet_url');
+      if (savedUrl) {
+        syncToGoogleSheet(savedUrl, updatedTasks, updatedProjects);
+      }
     } catch (e) {
       console.warn('LocalStorage save failed: ', e);
     }
@@ -663,6 +756,12 @@ export default function App() {
               currentUser={currentUser}
               categoryLabels={categoryLabels}
               usersList={usersList}
+              sheetUrl={sheetUrl}
+              setSheetUrl={setSheetUrl}
+              syncStatus={syncStatus}
+              lastSyncTime={lastSyncTime}
+              onFetchFromGoogleSheet={() => fetchFromGoogleSheet(sheetUrl)}
+              onSyncToGoogleSheet={() => syncToGoogleSheet(sheetUrl, tasks, projects)}
             />
           )}
 

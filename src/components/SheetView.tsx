@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { TaskEntry, TaskCategory, CATEGORY_LABELS, CATEGORY_COLORS, AppUser } from '../types';
-import { Download, Upload, Plus, Search, Trash2, Edit2, CheckCircle2, AlertCircle, PlayCircle } from 'lucide-react';
+import { Download, Upload, Plus, Search, Trash2, Edit2, CheckCircle2, AlertCircle, PlayCircle, Database, RefreshCw, Cloud, CloudOff, Info, Copy, Check } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 interface SheetViewProps {
@@ -13,7 +13,151 @@ interface SheetViewProps {
   currentUser?: AppUser;
   categoryLabels?: Record<TaskCategory, string>;
   usersList?: AppUser[];
+  
+  // Google Sheets props
+  sheetUrl: string;
+  setSheetUrl: (url: string) => void;
+  syncStatus: 'idle' | 'syncing' | 'success' | 'error';
+  lastSyncTime: string | null;
+  onFetchFromGoogleSheet: () => void;
+  onSyncToGoogleSheet: () => void;
 }
+
+const APPS_SCRIPT_CODE = `// Engineers Project Hub - Shared Google Sheets DB Proxy
+// Deploy this script as a Web App to create a free, single shared database!
+
+const SPREADSHEET_ID = ""; // Leave blank to auto-use Active Spreadsheet
+
+function doGet(e) {
+  try {
+    const ss = SPREADSHEET_ID ? SpreadsheetApp.openById(SPREADSHEET_ID) : SpreadsheetApp.getActiveSpreadsheet();
+    
+    // Auto-create sheets if they do not exist
+    let taskSheet = ss.getSheetByName("Tasks");
+    if (!taskSheet) {
+      taskSheet = ss.insertSheet("Tasks");
+      taskSheet.appendRow(["id", "date", "project", "category", "description", "status", "timeSpent", "completedDate", "engineer"]);
+    }
+    
+    let projectSheet = ss.getSheetByName("Projects");
+    if (!projectSheet) {
+      projectSheet = ss.insertSheet("Projects");
+      projectSheet.appendRow(["name", "status", "leadEngineer", "description", "assignedEngineers"]);
+    }
+    
+    // Read Tasks
+    const tasksData = taskSheet.getDataRange().getValues();
+    const tasks = [];
+    if (tasksData.length > 1) {
+      const headers = tasksData[0];
+      for (let i = 1; i < tasksData.length; i++) {
+        const row = tasksData[i];
+        const task = {};
+        headers.forEach((h, index) => {
+          task[h] = row[index];
+        });
+        task.timeSpent = Number(task.timeSpent) || 0;
+        tasks.push(task);
+      }
+    }
+    
+    // Read Projects
+    const projectsData = projectSheet.getDataRange().getValues();
+    const projects = [];
+    if (projectsData.length > 1) {
+      const headers = projectsData[0];
+      for (let i = 1; i < projectsData.length; i++) {
+        const row = projectsData[i];
+        const proj = {};
+        headers.forEach((h, index) => {
+          if (h === "assignedEngineers") {
+            try {
+              proj[h] = row[index] ? JSON.parse(row[index]) : [];
+            } catch {
+              proj[h] = row[index] ? row[index].toString().split(",") : [];
+            }
+          } else {
+            proj[h] = row[index];
+          }
+        });
+        projects.push(proj);
+      }
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({ 
+      success: true, 
+      tasks, 
+      projects 
+    })).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.toString() }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doPost(e) {
+  try {
+    const payload = JSON.parse(e.postData.contents);
+    const ss = SPREADSHEET_ID ? SpreadsheetApp.openById(SPREADSHEET_ID) : SpreadsheetApp.getActiveSpreadsheet();
+    
+    if (payload.action === "save_all") {
+      const { tasks, projects } = payload;
+      
+      // Save Tasks
+      let taskSheet = ss.getSheetByName("Tasks");
+      if (taskSheet) {
+        taskSheet.clear();
+      } else {
+        taskSheet = ss.insertSheet("Tasks");
+      }
+      taskSheet.appendRow(["id", "date", "project", "category", "description", "status", "timeSpent", "completedDate", "engineer"]);
+      if (tasks && tasks.length > 0) {
+        tasks.forEach(t => {
+          taskSheet.appendRow([
+            t.id || "",
+            t.date || "",
+            t.project || "",
+            t.category || "",
+            t.description || "",
+            t.status || "",
+            t.timeSpent || 0,
+            t.completedDate || "",
+            t.engineer || ""
+          ]);
+        });
+      }
+      
+      // Save Projects
+      let projectSheet = ss.getSheetByName("Projects");
+      if (projectSheet) {
+        projectSheet.clear();
+      } else {
+        projectSheet = ss.insertSheet("Projects");
+      }
+      projectSheet.appendRow(["name", "status", "leadEngineer", "description", "assignedEngineers"]);
+      if (projects && projects.length > 0) {
+        projects.forEach(p => {
+          projectSheet.appendRow([
+            p.name || "",
+            p.status || "",
+            p.leadEngineer || "",
+            p.description || "",
+            JSON.stringify(p.assignedEngineers || [])
+          ]);
+        });
+      }
+      
+      return ContentService.createTextOutput(JSON.stringify({ success: true }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({ success: false, error: "Unknown action" }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.toString() }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}`;
 
 export default function SheetView({
   tasks,
@@ -25,8 +169,48 @@ export default function SheetView({
   currentUser,
   categoryLabels,
   usersList,
+  sheetUrl,
+  setSheetUrl,
+  syncStatus,
+  lastSyncTime,
+  onFetchFromGoogleSheet,
+  onSyncToGoogleSheet,
 }: SheetViewProps) {
   const labels = categoryLabels || CATEGORY_LABELS;
+
+  // New Google Sheets Sync Panel states
+  const [showInstructions, setShowInstructions] = useState(!sheetUrl);
+  const [inputUrl, setInputUrl] = useState(sheetUrl);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyCode = () => {
+    navigator.clipboard.writeText(APPS_SCRIPT_CODE);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleConnect = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inputUrl.trim()) return;
+    
+    if (!inputUrl.includes('script.google.com')) {
+      alert('Please enter a valid Google Apps Script Web App URL (starts with script.google.com/macros/s/)');
+      return;
+    }
+    
+    setSheetUrl(inputUrl.trim());
+    // Trigger initial fetch
+    setTimeout(() => {
+      onFetchFromGoogleSheet();
+    }, 100);
+  };
+
+  const handleDisconnect = () => {
+    if (window.confirm('Disconnect from Google Sheets Cloud DB and fallback to offline browser Storage?')) {
+      setSheetUrl('');
+      setInputUrl('');
+    }
+  };
 
   const [searchTerm, setSearchTerm] = useState('');
   const [filterCategory, setFilterCategory] = useState<string>('ALL');
@@ -288,6 +472,168 @@ export default function SheetView({
 
   return (
     <div id="sheet_view_container" className="flex flex-col gap-6">
+      {/* Google Sheets Cloud DB Sync Integration Panel */}
+      {(currentUser?.role === 'admin' || sheetUrl) && (
+        <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 shadow-sm space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-sm shrink-0 ${
+                sheetUrl ? 'bg-emerald-50 text-emerald-600 border border-emerald-250' : 'bg-slate-100 text-slate-500 border border-slate-200'
+              }`}>
+                <Database className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-sm font-bold text-slate-800">Google Sheets Shared Cloud DB</h3>
+                  {sheetUrl ? (
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold border ${
+                      syncStatus === 'syncing' ? 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse' :
+                      syncStatus === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200' :
+                      'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    }`}>
+                      {syncStatus === 'syncing' && <RefreshCw className="h-2.5 w-2.5 animate-spin" />}
+                      {syncStatus === 'syncing' ? 'Syncing...' :
+                       syncStatus === 'error' ? 'Sync Error' : 'Cloud DB Connected'}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-slate-150 px-2 py-0.5 text-[10px] font-bold text-slate-650 border border-slate-250">
+                      <CloudOff className="h-2.5 w-2.5" /> Local Storage Mode
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {sheetUrl 
+                    ? `Central shared database in Google Sheets. All actions sync automatically.`
+                    : `Store your data in a single shared, 100% free Google Sheets database for all users.`
+                  }
+                </p>
+              </div>
+            </div>
+            
+            {currentUser?.role === 'admin' && (
+              <button
+                onClick={() => setShowInstructions(!showInstructions)}
+                className="text-xs font-bold text-indigo-650 hover:text-indigo-850 underline flex items-center gap-1 self-start sm:self-auto cursor-pointer"
+              >
+                <Info className="h-3.5 w-3.5" />
+                {showInstructions ? 'Hide Setup Help' : 'Setup Database Instructions (100% Free)'}
+              </button>
+            )}
+          </div>
+
+          {/* Setup wizard for Google Apps Script Database Integration (100% Free) - ONLY Visible to Admin */}
+          {currentUser?.role === 'admin' && showInstructions && (
+            <div className="bg-slate-50 rounded-xl border border-slate-250 p-4 text-xs space-y-4 animate-fade-in">
+              <div className="border-b border-slate-200 pb-2">
+                <h4 className="font-bold text-slate-800">How to create your Free Shared Database in 1 Minute</h4>
+                <p className="text-slate-500 text-[11px] mt-0.5">This sets up a Google Sheet that all users of this applet will read/write to in real-time!</p>
+              </div>
+              
+              <ol className="list-decimal list-inside space-y-2.5 text-slate-600 leading-relaxed font-semibold">
+                <li>
+                  <span className="font-bold text-slate-700 mr-1">Prepare Sheet:</span> Create a new empty Google Spreadsheet (e.g. named <code className="bg-slate-200 px-1 py-0.5 rounded font-mono font-bold text-indigo-700">Project Hub DB</code>).
+                </li>
+                <li>
+                  <span className="font-bold text-slate-700 mr-1">Add Apps Script:</span> Go to <span className="font-bold">Extensions &gt; Apps Script</span> in your sheet. Delete any code inside, paste the script code below, and save the project.
+                </li>
+                <li>
+                  <span className="font-bold text-slate-700 mr-1">Deploy as Web App:</span> Click <span className="font-bold text-teal-700">Deploy &gt; New Deployment</span>. Select <span className="font-bold text-teal-750">Web app</span>. Under "Execute as" select <span className="font-semibold text-slate-700">Me</span>. Under "Who has access" select <span className="font-bold text-indigo-600">Anyone</span>. Click Deploy, authorize Google permission prompts, and copy the generated <span className="font-bold">Web app URL</span> (ends in <code className="font-mono text-emerald-700">/exec</code>).
+                </li>
+              </ol>
+
+              {/* Apps Script Code Copy Block */}
+              <div className="space-y-1.5 pt-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Google Apps Script Code</span>
+                  <button
+                    type="button"
+                    onClick={handleCopyCode}
+                    className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-2.5 py-1 rounded text-[11px] transition shadow-sm cursor-pointer"
+                  >
+                    {copied ? <Check className="h-3.5 w-3.5 text-white" /> : <Copy className="h-3.5 w-3.5 text-white" />}
+                    {copied ? 'Copied script!' : 'Copy Script Code'}
+                  </button>
+                </div>
+                <pre className="bg-slate-900 text-slate-300 font-mono text-[10px] p-3 rounded-lg overflow-x-auto max-h-48 border border-slate-950">
+                  {APPS_SCRIPT_CODE}
+                </pre>
+              </div>
+            </div>
+          )}
+
+          {/* Connection URL Controls block - Restricted to Admin, Non-Admins only see Info + Sync Now button */}
+          {currentUser?.role === 'admin' ? (
+            <form onSubmit={handleConnect} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 border-t border-slate-100 pt-3">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  placeholder="Paste Google Apps Script Web App URL (ends in /exec)..."
+                  value={inputUrl}
+                  onChange={(e) => setInputUrl(e.target.value)}
+                  className="w-full bg-slate-50/50 border border-slate-200 rounded-lg pl-8 p-2 text-xs text-slate-700 outline-none focus:border-indigo-500 focus:bg-white transition"
+                  disabled={syncStatus === 'syncing'}
+                />
+                <Cloud className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {sheetUrl ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={onFetchFromGoogleSheet}
+                      disabled={syncStatus === 'syncing'}
+                      className="flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold border border-indigo-200 px-3.5 py-2 rounded-lg text-xs transition cursor-pointer disabled:opacity-50"
+                      title="Manually fetch latest changes from sheet"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${syncStatus === 'syncing' ? 'animate-spin' : ''}`} />
+                      Refresh
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDisconnect}
+                      className="bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold border border-rose-200 px-3.5 py-2 rounded-lg text-xs transition cursor-pointer"
+                    >
+                      Disconnect Mode
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="submit"
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-2 rounded-lg text-xs transition shadow-sm cursor-pointer whitespace-nowrap"
+                  >
+                    Save & Connect Cloud DB
+                  </button>
+                )}
+              </div>
+            </form>
+          ) : (
+            sheetUrl && (
+              <div className="flex items-center justify-between border-t border-slate-100 pt-3">
+                <span className="text-xs text-slate-500 font-semibold flex items-center gap-1.5">
+                  <Database className="h-3.5 w-3.5 text-slate-400" /> Connection managed by system administrator.
+                </span>
+                <button
+                  type="button"
+                  onClick={onFetchFromGoogleSheet}
+                  disabled={syncStatus === 'syncing'}
+                  className="flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold border border-indigo-200 px-3.5 py-2 rounded-lg text-xs transition cursor-pointer disabled:opacity-50 shadow-sm"
+                  title="Manually sync latest changes from sheet"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${syncStatus === 'syncing' ? 'animate-spin' : ''}`} />
+                  Sync Data Now
+                </button>
+              </div>
+            )
+          )}
+
+          {sheetUrl && lastSyncTime && (
+            <div className="text-[10px] font-mono text-slate-400 text-right">
+              Last Successful Sync: <span className="text-slate-600 font-bold">{lastSyncTime}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Search and Filters Strip */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 shadow-sm">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
