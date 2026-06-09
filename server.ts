@@ -34,6 +34,75 @@ async function startServer() {
     }
   });
 
+  // Proxy GET request to Google Sheet
+  app.get("/api/proxy-sheet", async (req, res) => {
+    try {
+      if (!fs.existsSync(CONFIG_FILE)) {
+        return res.json({ success: false, error: "No Google Sheets URL configured on server." });
+      }
+      const data = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+      const url = data.sheetUrl;
+      if (!url) {
+        return res.json({ success: false, error: "No Google Sheets URL configured on server." });
+      }
+      
+      const fetchUrl = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`;
+      const response = await fetch(fetchUrl);
+      const resText = await response.text();
+      
+      try {
+        const resJson = JSON.parse(resText);
+        return res.json(resJson);
+      } catch (parseError) {
+        return res.status(502).json({ 
+          success: false, 
+          error: "Received non-JSON response from Google Sheet. Verify that the URL is a deployed Google Apps Script Web App.",
+          raw: resText 
+        });
+      }
+    } catch (error) {
+      console.error("Proxy GET failed:", error);
+      return res.status(500).json({ success: false, error: String(error) });
+    }
+  });
+
+  // Proxy POST request to Google Sheet
+  app.post("/api/proxy-sheet", async (req, res) => {
+    try {
+      if (!fs.existsSync(CONFIG_FILE)) {
+        return res.json({ success: false, error: "No Google Sheets URL configured on server." });
+      }
+      const data = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+      const url = data.sheetUrl;
+      if (!url) {
+        return res.json({ success: false, error: "No Google Sheets URL configured on server." });
+      }
+      
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8",
+        },
+        body: JSON.stringify(req.body)
+      });
+      const resText = await response.text();
+      
+      try {
+        const resJson = JSON.parse(resText);
+        return res.json(resJson);
+      } catch (parseError) {
+        return res.status(502).json({ 
+          success: false, 
+          error: "Received non-JSON response from Google Sheet. Verify that the URL is a deployed Google Apps Script Web App.",
+          raw: resText 
+        });
+      }
+    } catch (error) {
+      console.error("Proxy POST failed:", error);
+      return res.status(500).json({ success: false, error: String(error) });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

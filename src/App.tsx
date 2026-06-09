@@ -147,8 +147,16 @@ export default function App() {
     if (!url) return;
     setSyncStatus('syncing');
     try {
-      const fetchUrl = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`;
-      const response = await fetch(fetchUrl);
+      // First ensure the server has the current URL in sync
+      try {
+        await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sheetUrl: url })
+        });
+      } catch {}
+
+      const response = await fetch('/api/proxy-sheet');
       const data = await response.json();
       if (data.success) {
         const remoteTasks = data.tasks || [];
@@ -218,10 +226,19 @@ export default function App() {
     if (!url) return;
     setSyncStatus('syncing');
     try {
-      const response = await fetch(url, {
+      // Ensure the server has our current URL in config
+      try {
+        await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sheetUrl: url })
+        });
+      } catch {}
+
+      const response = await fetch('/api/proxy-sheet', {
         method: 'POST',
         headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
+          'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           action: 'save_all',
