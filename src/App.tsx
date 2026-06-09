@@ -250,7 +250,29 @@ export default function App() {
     }
   };
 
-  // Save changes to localstorage on any update
+  const handleUpdateSheetUrl = async (url: string) => {
+    setSheetUrl(url);
+    try {
+      localStorage.setItem('op_hub_sheet_url', url);
+    } catch {}
+
+    // Synchronize to full-stack backend
+    try {
+      await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sheetUrl: url })
+      });
+    } catch (e) {
+      console.error('Failed to sync sheetUrl to backend config', e);
+    }
+
+    if (url) {
+      fetchFromGoogleSheet(url);
+    }
+  };
+
+  // Save changes to localstorage on any update & fetch config from backend
   useEffect(() => {
     try {
       const savedTasks = localStorage.getItem('engineer_tasks');
@@ -267,16 +289,42 @@ export default function App() {
       } else {
         setProjects(INITIAL_PROJECTS);
       }
-
-      const savedUrl = localStorage.getItem('op_hub_sheet_url');
-      if (savedUrl) {
-        fetchFromGoogleSheet(savedUrl);
-      }
     } catch (e) {
       console.warn('LocalStorage error: ', e);
       setTasks(INITIAL_TASKS);
       setProjects(INITIAL_PROJECTS);
     }
+
+    // Centrally fetch the shared Google Sheets DB URL from our full-stack backend API!
+    const initApp = async () => {
+      try {
+        const res = await fetch('/api/config');
+        const data = await res.json();
+        if (data && data.success && data.sheetUrl) {
+          setSheetUrl(data.sheetUrl);
+          try {
+            localStorage.setItem('op_hub_sheet_url', data.sheetUrl);
+          } catch {}
+          fetchFromGoogleSheet(data.sheetUrl);
+        } else {
+          // Fallback to localStorage if any has been set
+          const savedUrl = localStorage.getItem('op_hub_sheet_url');
+          if (savedUrl) {
+            setSheetUrl(savedUrl);
+            fetchFromGoogleSheet(savedUrl);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to load server sheet-url, falling back to local:', err);
+        const savedUrl = localStorage.getItem('op_hub_sheet_url');
+        if (savedUrl) {
+          setSheetUrl(savedUrl);
+          fetchFromGoogleSheet(savedUrl);
+        }
+      }
+    };
+
+    initApp();
   }, []);
 
   function saveToStorage(
@@ -807,7 +855,7 @@ export default function App() {
               categoryLabels={categoryLabels}
               usersList={usersList}
               sheetUrl={sheetUrl}
-              setSheetUrl={setSheetUrl}
+              setSheetUrl={handleUpdateSheetUrl}
               syncStatus={syncStatus}
               lastSyncTime={lastSyncTime}
               onFetchFromGoogleSheet={() => fetchFromGoogleSheet(sheetUrl)}
