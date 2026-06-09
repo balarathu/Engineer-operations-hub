@@ -297,6 +297,7 @@ export default function App() {
 
     // Centrally fetch the shared Google Sheets DB URL from our full-stack backend API!
     const initApp = async () => {
+      setSyncStatus('syncing');
       try {
         const res = await fetch('/api/config');
         const data = await res.json();
@@ -312,6 +313,8 @@ export default function App() {
           if (savedUrl) {
             setSheetUrl(savedUrl);
             fetchFromGoogleSheet(savedUrl);
+          } else {
+            setSyncStatus('idle');
           }
         }
       } catch (err) {
@@ -320,6 +323,8 @@ export default function App() {
         if (savedUrl) {
           setSheetUrl(savedUrl);
           fetchFromGoogleSheet(savedUrl);
+        } else {
+          setSyncStatus('error');
         }
       }
     };
@@ -376,7 +381,13 @@ export default function App() {
     );
     
     if (!matched) {
-      setErrorMsg('User not found. Try as admin, manager, or balarathu.');
+      if (syncStatus === 'syncing') {
+        setErrorMsg('Still syncing staff database from shared Google Sheets. Please wait a moment and try again once Synced.');
+      } else if (syncStatus === 'error') {
+        setErrorMsg('User not found. Connection to the shared Google Sheet failed or is offline. Newly added staff cannot log in until sync is restored.');
+      } else {
+        setErrorMsg('User not found. Try as admin, manager, or balarathu. If this is a new user, ensure Google Sheets synchronization is complete.');
+      }
       return;
     }
     
@@ -558,9 +569,56 @@ export default function App() {
           </div>
           
           <div className="p-6 sm:p-8 space-y-6">
+            {/* Real-time Google Sheets Database Sync Status Bar */}
+            <div className="bg-slate-50 border border-slate-150 rounded-2xl p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Database className="h-4 w-4 text-indigo-600 animate-pulse shrink-0" />
+                  <span className="text-xs font-bold text-slate-700">Shared Database Sync:</span>
+                </div>
+                <div>
+                  {syncStatus === 'syncing' && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-50 text-amber-700 border border-amber-200">
+                      <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-ping" />
+                      Syncing Staff...
+                    </span>
+                  )}
+                  {syncStatus === 'success' && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200 animate-fade-in">
+                      <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
+                      Synced List
+                    </span>
+                  )}
+                  {syncStatus === 'error' && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-50 text-rose-700 border border-rose-200">
+                      <span className="w-1.5 h-1.5 bg-rose-500 rounded-full" />
+                      Connection Error
+                    </span>
+                  )}
+                  {syncStatus === 'idle' && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-slate-100 text-slate-500 border border-slate-200">
+                      Local Fallback
+                    </span>
+                  )}
+                </div>
+              </div>
+              <p className="text-[10px] text-slate-500 leading-relaxed">
+                {syncStatus === 'syncing' ? (
+                  "Downloading staff directory and latest credentials from your linked Google Sheet. Please wait..."
+                ) : syncStatus === 'success' ? (
+                  "The shared database has been loaded. Newly registered profile records are synced and ready for sign-in."
+                ) : syncStatus === 'error' ? (
+                  "Connection to Google Sheets was unsuccessful. Ensure the web app is deployed correctly. Default users remain active local-only."
+                ) : (
+                  "App is operating locally. Connect a Google Sheet in the spreadsheet portal to sync accounts across machines."
+                )}
+              </p>
+            </div>
+
             {errorMsg && (
-              <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs py-2.5 px-3 rounded-lg flex items-center gap-2">
-                <span className="font-bold">Error:</span> {errorMsg}
+              <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs py-2.5 px-3 rounded-xl flex flex-col gap-1.5 leading-relaxed">
+                <span className="font-bold text-rose-800">Login Issue:</span>
+                <span>{errorMsg}</span>
               </div>
             )}
             
@@ -570,7 +628,7 @@ export default function App() {
                 <input
                   type="text"
                   required
-                  placeholder="manager, admin"
+                  placeholder="manager, admin, or custom staff ID"
                   value={loginUsername}
                   onChange={(e) => setLoginUsername(e.target.value)}
                   className="w-full mt-1.5 bg-slate-50 border border-slate-250 text-sm rounded-xl p-2.5 outline-none focus:border-indigo-500 focus:bg-white transition"
@@ -582,7 +640,7 @@ export default function App() {
                 <input
                   type="password"
                   required
-                  placeholder="Password"
+                  placeholder="Enter passcode"
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   className="w-full mt-1.5 bg-slate-50 border border-slate-250 text-sm rounded-xl p-2.5 outline-none focus:border-indigo-500 focus:bg-white transition"
@@ -591,9 +649,21 @@ export default function App() {
               
               <button
                 type="submit"
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm py-2.5 rounded-xl shadow-md hover:shadow-lg transition cursor-pointer"
+                disabled={syncStatus === 'syncing' && usersList.length === 0}
+                className={`w-full text-white font-bold text-sm py-2.5 rounded-xl shadow-md transition cursor-pointer flex items-center justify-center gap-2 ${
+                  syncStatus === 'syncing' && usersList.length === 0
+                    ? 'bg-indigo-400 cursor-not-allowed opacity-75'
+                    : 'bg-indigo-600 hover:bg-indigo-700 hover:shadow-lg'
+                }`}
               >
-                Sign In to Hub
+                {syncStatus === 'syncing' && usersList.length === 0 ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    Fetching Staff List...
+                  </>
+                ) : (
+                  "Sign In to Hub"
+                )}
               </button>
             </form>
           </div>
